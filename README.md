@@ -1,69 +1,60 @@
 # PR Review Agent
 
-An autonomous code review bot powered by Claude. When a pull request is opened or updated, it fetches the diff via the GitHub API, runs it through Claude for analysis, and posts inline review comments directly on the PR.
+A GitHub webhook service that reviews pull requests with Claude and posts inline comments on the diff: bugs, security issues and missing tests.
+
+<!-- TODO: screenshot or GIF of the bot commenting on a real PR -->
 
 ## How it works
 
-1. GitHub sends a `pull_request` webhook event (`opened` or `synchronize`)
-2. The agent verifies the HMAC-SHA256 signature and returns `200` immediately
-3. A background task fetches the PR diff and sends it to Claude
-4. Claude returns structured JSON comments; the agent posts them as inline PR review comments
+```
+GitHub PR event ──▶ FastAPI /webhooks/github ──▶ background task
+                         │ verify HMAC, return 200        │
+                         ▼                                ▼
+                                           GitHub files API (diff)
+                                                          ▼
+                                           Claude (JSON comments)
+                                                          ▼
+                                           GitHub review API (inline comments)
+```
+
+1. GitHub sends a `pull_request` webhook (`opened` or `synchronize`).
+2. The service verifies the HMAC-SHA256 signature and returns `200` immediately.
+3. A background task fetches the changed files and their patches through the GitHub API and sends them to Claude.
+4. Claude returns a JSON array of comments (`path`, `line`, `body`, optional severity); the service posts them as one review with inline comments.
 
 ## Stack
 
-- **FastAPI** — async webhook server
-- **LangChain + Anthropic** — Claude integration with structured JSON output
-- **httpx** — GitHub API calls
-- **Pydantic** — settings and payload validation
+FastAPI, LangChain + Anthropic, httpx, Pydantic, Docker, Fly.io. Tests use pytest and respx.
 
-## Setup
+## Design decisions
 
-### Prerequisites
+- **Acknowledge first, review later.** GitHub expects a fast webhook response, so the handler returns `200` and the review runs in an `asyncio` task.
+- **Retries with backoff.** A failed review is retried up to 3 times (1s, 2s, 4s) before it is logged and dropped.
+- **Per-PR rate limit.** A PR is reviewed at most once every 60 seconds, so a burst of pushes does not trigger a burst of reviews.
+- **Defensive parsing.** The model's response is searched for a JSON array, and any comment missing a path, line or body is discarded rather than posted.
+- **Draft PRs skipped by default** (`SKIP_DRAFT_PRS`).
 
-- Python 3.10+
-- A GitHub Personal Access Token with `repo` scope
-- An Anthropic API key
+## Run it
 
-### Installation
+Requires Python 3.10+, a GitHub personal access token with `repo` scope, and an Anthropic API key.
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/rohansh2017/pr-review-agent.git
 cd pr-review-agent
 pip install -r requirements.txt
-cp .env.example .env
-```
-
-Edit `.env` and fill in your credentials:
-
-```
-GITHUB_TOKEN=ghp_...
-ANTHROPIC_API_KEY=sk-ant-...
-WEBHOOK_SECRET=<any random string>
-SKIP_DRAFT_PRS=true
-LOG_LEVEL=INFO
-```
-
-### Running locally
-
-```bash
+cp .env.example .env   # then fill in the three secrets
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Verify the server is up:
+Check it is up:
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-### Connecting to GitHub
+### Connect it to a repo
 
-Use [ngrok](https://ngrok.com/) to expose your local server:
-
-```bash
-ngrok http 8000
-```
-
-Then add a webhook to your repo under **Settings → Webhooks → Add webhook**:
+Expose the local server with [ngrok](https://ngrok.com/) (`ngrok http 8000`), then add a webhook under **Settings → Webhooks → Add webhook**:
 
 | Field | Value |
 |---|---|
@@ -72,7 +63,7 @@ Then add a webhook to your repo under **Settings → Webhooks → Add webhook**:
 | Secret | your `WEBHOOK_SECRET` value |
 | Events | Pull requests |
 
-Open a PR — the agent will post review comments within a few seconds.
+Open a PR and the agent posts its review comments.
 
 ## Tests
 
@@ -80,29 +71,32 @@ Open a PR — the agent will post review comments within a few seconds.
 pytest
 ```
 
-To run a single test file:
+Covers webhook signature verification and event filtering, the GitHub client, response parsing in the LLM reviewer, and the review service.
 
-```bash
-pytest tests/test_llm_reviewer.py -v
-```
-
-## Deployment (Fly.io)
+## Deploy (Fly.io)
 
 ```bash
 fly launch
-fly secrets set GITHUB_TOKEN=ghp_... ANTHROPIC_API_KEY=sk-ant-... WEBHOOK_SECRET=...
+fly secrets set GITHUB_TOKEN=... ANTHROPIC_API_KEY=... WEBHOOK_SECRET=...
 fly deploy
 ```
 
-Set your webhook Payload URL to `https://<your-app>.fly.dev/webhooks/github`.
+Set the webhook Payload URL to `https://<your-app>.fly.dev/webhooks/github`.
 
 ## Configuration
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GITHUB_TOKEN` | Yes | — | GitHub PAT with `repo` scope |
-| `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key |
-| `WEBHOOK_SECRET` | Yes | — | HMAC secret set in GitHub webhook |
+| `GITHUB_TOKEN` | Yes | | GitHub PAT with `repo` scope |
+| `ANTHROPIC_API_KEY` | Yes | | Anthropic API key |
+| `WEBHOOK_SECRET` | Yes | | HMAC secret set in the GitHub webhook |
 | `SKIP_DRAFT_PRS` | No | `true` | Skip reviews for draft PRs |
 | `LOG_LEVEL` | No | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`) |
 | `PORT` | No | `8000` | Port to bind the server |
+
+## Limitations
+
+- Only the first page of changed files is fetched, so very large PRs are reviewed partially.
+- The model sees the diff only, not the rest of the repository.
+- The rate limiter is in memory: it resets on restart and is not shared across instances.
+- There is no cap on diff size before it is sent to the model.
