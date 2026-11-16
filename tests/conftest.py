@@ -1,6 +1,11 @@
 """Pytest fixtures and test client."""
 
+import os
 from unittest.mock import MagicMock
+
+# App startup loads Settings from the environment, so a clean checkout needs dummy values.
+for _k in ("GITHUB_TOKEN", "ANTHROPIC_API_KEY", "WEBHOOK_SECRET"):
+    os.environ.setdefault(_k, "test")
 
 import pytest
 from fastapi.testclient import TestClient
