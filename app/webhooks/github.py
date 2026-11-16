@@ -117,7 +117,9 @@ async def handle_github_webhook(
     pr = payload.pull_request
     rate_key = f"{repo}#{pr.number}"
     now = time.monotonic()
-    if now - _last_review_time.get(rate_key, 0) < _RATE_LIMIT_SECONDS:
+    last = _last_review_time.get(rate_key)
+    # monotonic() can be under 60 right after boot, so "never reviewed" must not default to 0
+    if last is not None and now - last < _RATE_LIMIT_SECONDS:
         logger.info("Rate limited review for %s PR #%s", repo, pr.number)
         return Response(status_code=200, content="rate limited")
     _last_review_time[rate_key] = now
