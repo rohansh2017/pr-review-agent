@@ -1,5 +1,7 @@
 # PR Review Agent
 
+[![Tests](https://github.com/rohansh2017/pr-review-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/rohansh2017/pr-review-agent/actions/workflows/tests.yml)
+
 A GitHub webhook service that reviews pull requests with Claude and posts inline comments on the diff: bugs, security issues and missing tests.
 
 <!-- TODO: screenshot or GIF of the bot commenting on a real PR -->
